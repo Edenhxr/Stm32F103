@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug STM32F103 with ST-Link",
+            "type": "cortex-debug",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Release/Stm32F103.elf",
+            "servertype": "openocd",
+            "serverpath": "openocd",
+            // 核心：直接加载我们根目录写的 openocd.cfg
+            "configFiles": [
+                "${workspaceFolder}/openocd.cfg"
+            ],
+            "runToEntryPoint": "main"
+        }
+    ]
+}

@@ -1,0 +1,15 @@
+# 1. 忽略 CMake 编译文件夹（两台电脑必须各自在本地编译）
+build/
+Build/
+CMakeFiles/
+CMakeCache.txt
+
+# 2. 忽略 Mac 和 Windows 的系统隐藏文件
+.DS_Store
+Thumbs.db
+
+# 3. 忽略 VS Code 的本地状态缓存，但保留调试配置
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.json
