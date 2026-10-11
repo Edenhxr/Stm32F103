@@ -26,6 +26,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
 # Core project settings
 project(${CMAKE_PROJECT_NAME})
+# 强制关闭所有代码优化，并生成最详细的调试信息
+add_compile_options(-O0 -g)
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
 # Enable CMake support for ASM and C languages
