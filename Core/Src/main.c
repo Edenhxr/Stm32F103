@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bsp.h"
+#include "stm32f1xx_hal.h"
 #include "stm32f1xx_hal_gpio.h"
 /* USER CODE END Includes */
 
@@ -72,7 +73,7 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-
+  HAL_Init();
 
   /* USER CODE BEGIN Init */
 
@@ -88,7 +89,7 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
-  //BSP_Init();
+  BSP_Init();
   
   /* USER CODE END 2 */
 
@@ -96,7 +97,14 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    
+    BSP_LedAll(0xFF);
+    HAL_Delay(500);
+    BSP_LedAll(0x00);
+    HAL_Delay(500);
+    BSP_LedAll(0x55);
+    HAL_Delay(500);
+    BSP_LedAll(0xAA);
+    HAL_Delay(500);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -165,8 +173,8 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
