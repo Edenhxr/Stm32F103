@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bsp.h"
+#include "key.h"
 #include "stm32f1xx_hal.h"
 #include "stm32f1xx_hal_gpio.h"
 /* USER CODE END Includes */
@@ -90,21 +91,34 @@ int main(void)
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
   BSP_Init();
-  
+  Key_Init();
+  uint32_t last_tick = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    BSP_LedAll(0xFF);
-    HAL_Delay(500);
-    BSP_LedAll(0x00);
-    HAL_Delay(500);
-    BSP_LedAll(0x55);
-    HAL_Delay(500);
-    BSP_LedAll(0xAA);
-    HAL_Delay(500);
+    if (HAL_GetTick() - last_tick >= 1)
+      {
+        last_tick = HAL_GetTick();
+        Key_Scan();
+      }
+
+    // 2. 随时检查有没有按键事件发生
+    KeyEvent_t btn = Key_GetEvent();
+    if (btn == KEY_EVENT_SHORT)
+      {
+      // 单击处理
+      } 
+      else if (btn == KEY_EVENT_DOUBLE) 
+      {
+      // 双击处理
+      } 
+      else if (btn == KEY_EVENT_LONG) 
+      {
+      // 长按处理
+      }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
