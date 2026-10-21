@@ -21,6 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdlib.h>
 #include "bsp.h"
 #include "key.h"
 #include "stm32f1xx_hal.h"
@@ -34,6 +35,47 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+static uint8_t s_sw_cnt = 0;       // 消抖计数器
+static uint8_t s_sw_stable = 0;    // “已按下”锁存标志位（防止按住不放时连续触发）
+static uint8_t s_sw_event = 0;  
+void Encoder_Key_Scan(void)
+{
+    // 1. 读取 PB6 当前电平（低电平代表被按着，is_down = 1）
+    uint8_t is_down = (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6) == GPIO_PIN_RESET);
+
+    // 2. 如果当前被按着
+    if (is_down)
+    {
+        // 连续累加采样，避免机械触点火花干扰
+        if (s_sw_cnt < 15) // 连续检测 15 次（约 15ms）
+        {
+            s_sw_cnt++;
+            // 只有当：达到 15ms 消抖时间，且之前“还没被锁存标记过”时，才发货！
+            if (s_sw_cnt >= 15 && s_sw_stable == 0)
+            {
+                s_sw_stable = 1;  // 👈 核心！上锁！防止下个周期重复触发
+                s_sw_event = 1;   // 生产一个“按下事件”
+            }
+        }
+    }
+    // 3. 如果手松开了
+    else
+    {
+        s_sw_cnt = 0;     // 计数器清零
+        s_sw_stable = 0;  // 👈 核心！解锁！只有松手了，才允许下一次点击
+    }
+}
+
+/**
+ * @brief 供上层调用的“读后清零”事件获取函数
+ * @retval 1: 刚才被按了一下; 0: 没按
+ */
+uint8_t Encoder_Key_Pressed(void)
+{
+    uint8_t event = s_sw_event;
+    s_sw_event = 0; // 👈 读后立刻清零！
+    return event;
+}
 
 /* USER CODE END PD */
 
@@ -43,57 +85,28 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+TIM_HandleTypeDef htim3;
+
+UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-static uint8_t s_mode = 0; 
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_TIM3_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static void Mode1_AllOn(void) {
-    BSP_LedAll(0xFF); // 静态全亮，不需要计时器
-}
-
-static void Mode2_Running(void) {
-    static uint32_t last_led_tick = 0; // 👈 独立的时间戳！只属于流水灯
-    static uint8_t led_idx = 0;        // 当前亮到第几个灯 (0~7)
-
-    // 检查是否到了 37ms
-    if (HAL_GetTick() - last_led_tick >= 37) {
-        last_led_tick = HAL_GetTick(); // 重置闹钟
-
-        // 只亮当前这一个灯（1 往左移 led_idx 位）
-        BSP_LedAll(1U << led_idx);
-
-        // 移向下一个灯，满 8 归零
-        led_idx = (led_idx + 1U) % 8U;
-    }
-}
-
-static void Mode3_OddEven(void) {
-    static uint32_t last_led_tick = 0; // 👈 独立的时间戳！只属于奇偶交替
-    static uint8_t phase = 0;          // 阶段标志：0 或 1
-
-    // 检查是否到了 100ms
-    if (HAL_GetTick() - last_led_tick >= 100) {
-        last_led_tick = HAL_GetTick(); // 重置闹钟
-
-        if (phase == 0) {
-            BSP_LedAll(0x55); // 01010101 (奇数位亮)
-            phase = 1;
-        } else {
-            BSP_LedAll(0xAA); // 10101010 (偶数位亮)
-            phase = 0;
-        }
-    }
-}
+static int16_t last_cnt = 0;       // 记录上次的 CNT
+static int16_t speed_percent = 0;  // 速度百分比: -100 ~ +100
+static uint8_t is_paused = 0;      // 暂停标志位 (0:运行, 1:暂停)
 /* USER CODE END 0 */
 
 /**
@@ -110,7 +123,7 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-    HAL_Init();
+  HAL_Init();
 
   /* USER CODE BEGIN Init */
 
@@ -125,50 +138,45 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_TIM3_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   BSP_Init();
   Key_Init();
-  uint32_t last_key_tick = 0;
+  HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL); // 开启 TIM3 编码器接口
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    if (HAL_GetTick() - last_key_tick >= 1)
-      {
-        last_key_tick = HAL_GetTick();
-        Key_Scan();
-      }
-
-    // 2. 随时检查有没有按键事件发生
-    KeyEvent_t btn = Key_GetEvent();
-    if (btn == KEY_EVENT_SHORT) {
-      s_mode = 0;       // 单击：切状态 1（全亮）
-      BSP_LedAll(0x00);
-      } 
-    else if (btn == KEY_EVENT_DOUBLE) {
-      s_mode = 1;       // 双击：切状态 2（流水灯）
-      BSP_LedAll(0x00);
-      } 
-    else if (btn == KEY_EVENT_LONG) {
-      s_mode = 2;       // 长按：切状态 3（奇偶交替）
-      BSP_LedAll(0x00);
-      }
-
-    switch (s_mode)
+    int16_t cur_cnt = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
+    int16_t delta_ticks = cur_cnt - last_cnt;
+    if (abs(delta_ticks) >= 4)
     {
-      case 0:
-        Mode1_AllOn();    // 全亮
-        break;
-      case 1:
-        Mode2_Running();  // 37ms 流水灯
-        break;
-      case 2:
-        Mode3_OddEven();  // 100ms 奇偶交替
-        break;
-      default:
-        break;
+      int16_t steps = delta_ticks / 4;  // 计算转了几格（顺时针为正，逆时针为负）
+      last_cnt += steps * 4;            // 扣除掉已经结算的脉冲步数
+
+      // 每转一格改变 5%
+      speed_percent += steps * 5;
+
+      // 钳位保护：死死锁在 -100% 到 +100% 之间
+      if (speed_percent > 100) speed_percent = 100;
+      if (speed_percent < -100) speed_percent = -100;
+    }
+
+    // ---------------- 2. 按下编码器暂停/恢复 ----------------
+    // 假设你把之前做好的按键检测接入了编码器的按压引脚：
+    if (Encoder_Key_Pressed())// 检测到编码器被按了一下
+    {
+      is_paused = !is_paused; // 翻转暂停状态 (0 变 1，1 变 0)
+    }
+
+    // ---------------- 3. 输出给电机驱动 ----------------
+    if (is_paused) {
+      //Motor_SetSpeed(0); // 暂停时：输出 0% 速度（电机停转，但 speed_percent 记忆保留！）
+    } else {
+      //Motor_SetSpeed(speed_percent); // 正常输出目标速度
     }
     /* USER CODE END WHILE */
 
@@ -214,6 +222,88 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 0;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 65535;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 0;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 0;
+  if (HAL_TIM_Encoder_Init(&htim3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -228,6 +318,7 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
@@ -257,6 +348,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
