@@ -45,7 +45,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+static uint8_t s_mode = 0; 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -57,7 +57,43 @@ static void MX_GPIO_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void Mode1_AllOn(void) {
+    BSP_LedAll(0xFF); // 静态全亮，不需要计时器
+}
 
+static void Mode2_Running(void) {
+    static uint32_t last_led_tick = 0; // 👈 独立的时间戳！只属于流水灯
+    static uint8_t led_idx = 0;        // 当前亮到第几个灯 (0~7)
+
+    // 检查是否到了 37ms
+    if (HAL_GetTick() - last_led_tick >= 37) {
+        last_led_tick = HAL_GetTick(); // 重置闹钟
+
+        // 只亮当前这一个灯（1 往左移 led_idx 位）
+        BSP_LedAll(1U << led_idx);
+
+        // 移向下一个灯，满 8 归零
+        led_idx = (led_idx + 1U) % 8U;
+    }
+}
+
+static void Mode3_OddEven(void) {
+    static uint32_t last_led_tick = 0; // 👈 独立的时间戳！只属于奇偶交替
+    static uint8_t phase = 0;          // 阶段标志：0 或 1
+
+    // 检查是否到了 100ms
+    if (HAL_GetTick() - last_led_tick >= 100) {
+        last_led_tick = HAL_GetTick(); // 重置闹钟
+
+        if (phase == 0) {
+            BSP_LedAll(0x55); // 01010101 (奇数位亮)
+            phase = 1;
+        } else {
+            BSP_LedAll(0xAA); // 10101010 (偶数位亮)
+            phase = 0;
+        }
+    }
+}
 /* USER CODE END 0 */
 
 /**
@@ -74,7 +110,7 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+    HAL_Init();
 
   /* USER CODE BEGIN Init */
 
@@ -92,33 +128,48 @@ int main(void)
   /* USER CODE BEGIN 2 */
   BSP_Init();
   Key_Init();
-  uint32_t last_tick = 0;
+  uint32_t last_key_tick = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    if (HAL_GetTick() - last_tick >= 1)
+    if (HAL_GetTick() - last_key_tick >= 1)
       {
-        last_tick = HAL_GetTick();
+        last_key_tick = HAL_GetTick();
         Key_Scan();
       }
 
     // 2. 随时检查有没有按键事件发生
     KeyEvent_t btn = Key_GetEvent();
-    if (btn == KEY_EVENT_SHORT)
-      {
-      // 单击处理
+    if (btn == KEY_EVENT_SHORT) {
+      s_mode = 0;       // 单击：切状态 1（全亮）
+      BSP_LedAll(0x00);
       } 
-      else if (btn == KEY_EVENT_DOUBLE) 
-      {
-      // 双击处理
+    else if (btn == KEY_EVENT_DOUBLE) {
+      s_mode = 1;       // 双击：切状态 2（流水灯）
+      BSP_LedAll(0x00);
       } 
-      else if (btn == KEY_EVENT_LONG) 
-      {
-      // 长按处理
+    else if (btn == KEY_EVENT_LONG) {
+      s_mode = 2;       // 长按：切状态 3（奇偶交替）
+      BSP_LedAll(0x00);
       }
+
+    switch (s_mode)
+    {
+      case 0:
+        Mode1_AllOn();    // 全亮
+        break;
+      case 1:
+        Mode2_Running();  // 37ms 流水灯
+        break;
+      case 2:
+        Mode3_OddEven();  // 100ms 奇偶交替
+        break;
+      default:
+        break;
+    }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
