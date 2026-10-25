@@ -22,8 +22,11 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
 #include "bsp.h"
 #include "key.h"
+#include "oled.h"
 #include "stm32f1xx_hal.h"
 #include "stm32f1xx_hal_gpio.h"
 /* USER CODE END Includes */
@@ -35,47 +38,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-static uint8_t s_sw_cnt = 0;       // 消抖计数器
-static uint8_t s_sw_stable = 0;    // “已按下”锁存标志位（防止按住不放时连续触发）
-static uint8_t s_sw_event = 0;  
-void Encoder_Key_Scan(void)
-{
-    // 1. 读取 PB6 当前电平（低电平代表被按着，is_down = 1）
-    uint8_t is_down = (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6) == GPIO_PIN_RESET);
-
-    // 2. 如果当前被按着
-    if (is_down)
-    {
-        // 连续累加采样，避免机械触点火花干扰
-        if (s_sw_cnt < 15) // 连续检测 15 次（约 15ms）
-        {
-            s_sw_cnt++;
-            // 只有当：达到 15ms 消抖时间，且之前“还没被锁存标记过”时，才发货！
-            if (s_sw_cnt >= 15 && s_sw_stable == 0)
-            {
-                s_sw_stable = 1;  // 👈 核心！上锁！防止下个周期重复触发
-                s_sw_event = 1;   // 生产一个“按下事件”
-            }
-        }
-    }
-    // 3. 如果手松开了
-    else
-    {
-        s_sw_cnt = 0;     // 计数器清零
-        s_sw_stable = 0;  // 👈 核心！解锁！只有松手了，才允许下一次点击
-    }
-}
-
-/**
- * @brief 供上层调用的“读后清零”事件获取函数
- * @retval 1: 刚才被按了一下; 0: 没按
- */
-uint8_t Encoder_Key_Pressed(void)
-{
-    uint8_t event = s_sw_event;
-    s_sw_event = 0; // 👈 读后立刻清零！
-    return event;
-}
 
 /* USER CODE END PD */
 
@@ -108,7 +70,67 @@ static void MX_TIM1_Init(void);
 /* USER CODE BEGIN 0 */
 static int16_t last_cnt = 0;       // 记录上次的 CNT
 static int16_t speed_percent = 0;  // 速度百分比: -100 ~ +100
-static uint8_t is_paused = 0;      // 暂停标志位 (0:运行, 1:暂停)
+static uint8_t is_paused = 0;   
+static uint8_t s_sw_cnt = 0;       // 消抖计数器
+static uint8_t s_sw_stable = 0;    // “已按下”锁存标志位（防止按住不放时连续触发）
+static uint8_t s_sw_event = 0;  
+void Encoder_Key_Scan(void)
+{
+    // 1. 读取 PB6 当前电平（低电平代表被按着，is_down = 1）
+    uint8_t is_down = (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6) == GPIO_PIN_RESET);
+
+    // 2. 如果当前被按着
+    if (is_down)
+    {
+        // 连续累加采样，避免机械触点火花干扰
+        if (s_sw_cnt < 15) // 连续检测 15 次（约 15ms）
+        {
+            s_sw_cnt++;
+            // 只有当：达到 15ms 消抖时间，且之前“还没被锁存标记过”时，才发货！
+            if (s_sw_cnt >= 15 && s_sw_stable == 0)
+            {
+                s_sw_stable = 1;  // 👈 核心！上锁！防止下个周期重复触发
+                s_sw_event = 1;   // 生产一个“按下事件”
+            }
+        }
+    }
+    // 3. 如果手松开了
+    else
+    {
+        s_sw_cnt = 0;     // 计数器清零
+        s_sw_stable = 0;  // 👈 核心！解锁！只有松手了，才允许下一次点击
+    }
+}
+void Motor_SetSpeed(int speed)
+{
+  int current_speed = abs(3600 * (speed / 100.0));
+  if (speed > 0)
+  {
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, current_speed);
+  } else if (speed < 0)
+  {
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
+    // 3599 的 50% 约等于 1800
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, current_speed);
+  } else 
+  {
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+  }
+}
+/**
+ * @brief 供上层调用的“读后清零”事件获取函数
+ * @retval 1: 刚才被按了一下; 0: 没按
+ */
+uint8_t Encoder_Key_Pressed(void)
+{
+    uint8_t event = s_sw_event;
+    s_sw_event = 0; // 👈 读后立刻清零！
+    return event;
+}
+   // 暂停标志位 (0:运行, 1:暂停)
 /* USER CODE END 0 */
 
 /**
@@ -144,6 +166,11 @@ int main(void)
   MX_USART1_UART_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
+  OLED_Init();
+  OLED_Clear();
+  __HAL_RCC_AFIO_CLK_ENABLE();          // 1. 必须开启 AFIO 复用时钟！
+__HAL_AFIO_REMAP_SWJ_NOJTAG();        // 2. 彻底释放 PB3/PB4，关闭 JTAG，保留 SWD！
+__HAL_AFIO_REMAP_TIM3_PARTIAL();      // 3. 确保 TIM3 部分重映射到 PB4/PB5 真正生效！
   BSP_Init();
   Key_Init();
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL); // 开启 TIM3 编码器接口
@@ -152,58 +179,64 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  static uint32_t last_key_tick = 0;
+  static uint32_t last_disp_tick = 0;
   while (1)
   {
-    // ================= 1. 正转：速度 50% =================
-    // AIN1=1, AIN2=0 为正转
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
-    // 3599 的 50% 约等于 1800
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 1800);
-    HAL_Delay(2000); // 转 2 秒
-    // ================= 2. 停转 1 秒 =================
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0); // 占空比清零
-    HAL_Delay(1000);
+    // 1. 每 1ms 扫描一次编码器按键
+    if (HAL_GetTick() - last_key_tick >= 1)
+    {
+        last_key_tick = HAL_GetTick();
+        Encoder_Key_Scan();
+    }
 
-    // ================= 3. 反转：速度 50% =================
-    // AIN1=0, AIN2=1 为反转
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 1800);
-    HAL_Delay(2000); // 反转 2 秒
-
-    
+    // 2. 检测旋转编码器旋钮（调速）
     int16_t cur_cnt = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
     int16_t delta_ticks = cur_cnt - last_cnt;
     if (abs(delta_ticks) >= 4)
     {
-      int16_t steps = delta_ticks / 4;  // 计算转了几格（顺时针为正，逆时针为负）
-      last_cnt += steps * 4;            // 扣除掉已经结算的脉冲步数
+      int16_t steps = delta_ticks / 4;
+      last_cnt += steps * 4;
 
-      // 每转一格改变 5%
       speed_percent += steps * 5;
 
-      // 钳位保护：死死锁在 -100% 到 +100% 之间
       if (speed_percent > 100) speed_percent = 100;
       if (speed_percent < -100) speed_percent = -100;
     }
 
-    // ---------------- 2. 按下编码器暂停/恢复 ----------------
-    // 假设你把之前做好的按键检测接入了编码器的按压引脚：
-    if (Encoder_Key_Pressed())// 检测到编码器被按了一下
+    // 3. 旋钮按压检测（暂停/恢复）
+    if (Encoder_Key_Pressed())
     {
-      is_paused = !is_paused; // 翻转暂停状态 (0 变 1，1 变 0)
+      is_paused = !is_paused;
     }
 
-    // ---------------- 3. 输出给电机驱动 ----------------
+    // 4. 驱动电机（如果怀疑按键误触发，可以把这里直接改成 Motor_SetSpeed(speed_percent) 试试）
     if (is_paused) {
-      //Motor_SetSpeed(0); // 暂停时：输出 0% 速度（电机停转，但 speed_percent 记忆保留！）
+      //Motor_SetSpeed(0);
+      Motor_SetSpeed(0);
     } else {
-      //Motor_SetSpeed(speed_percent); // 正常输出目标速度
+      Motor_SetSpeed(speed_percent);
     }
-    /* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
+    // 5. 💡 核心：每隔 200ms 真正把数字画在 OLED 屏幕上！
+    if (HAL_GetTick() - last_disp_tick >= 200)
+    {
+      last_disp_tick = HAL_GetTick();
+
+      char buf[32];
+      
+      // 第 0 行：显示 TIM3 原始计数值
+      sprintf(buf, "CNT: %d   ", cur_cnt);
+      OLED_ShowString(0, 0, buf);
+
+      // 第 1 行：显示设定速度百分比
+      sprintf(buf, "SPD: %d%%  ", speed_percent);
+      OLED_ShowString(0, 1, buf);
+
+      // 第 2 行：显示状态 (0 是正常运行，1 是暂停)
+      sprintf(buf, "PAUSE: %d ", is_paused);
+      OLED_ShowString(0, 2, buf);
+    }
   }
   /* USER CODE END 3 */
 }
@@ -220,10 +253,13 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -233,12 +269,12 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -416,6 +452,7 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
@@ -427,7 +464,7 @@ static void MX_GPIO_Init(void)
                           |GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12|GPIO_PIN_13, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10|GPIO_PIN_11|GPIO_PIN_12|GPIO_PIN_13, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
@@ -450,6 +487,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB10 PB11 */
+  GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_11;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PB12 PB13 */
   GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13;
