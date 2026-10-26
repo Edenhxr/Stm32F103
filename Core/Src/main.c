@@ -69,58 +69,6 @@ static void MX_TIM1_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-static int16_t last_cnt = 0;       // 记录上次的 CNT
-static int16_t speed_percent = 0;  // 速度百分比: -100 ~ +100
-static uint8_t is_paused = 0;   
-
-//static uint8_t s_sw_cnt = 0;       // 消抖计数器
-//static uint8_t s_sw_stable = 0;    // “已按下”锁存标志位（防止按住不放时连续触发）
-static uint8_t s_sw_event = 0;  
-uint8_t Encoder_Key_Pressed(void)
-{
-    static uint8_t last_pin_state = 1;
-    // 读取 PB6：平时是 1，按下接地是 0
-    uint8_t cur_pin_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6);
-
-    // 下降沿检测：上一轮是 1(松开)，这一轮变成了 0(按下)
-    if (last_pin_state == 1 && cur_pin_state == 0)
-    {
-        last_pin_state = 0; // 锁定状态，只要手不松开，绝不连续触发
-        return 1;           // 触发按键！
-    }
-    
-    // 当手指完全松开后，才允许下一次按键
-    if (cur_pin_state == 1)
-    {
-        last_pin_state = 1;
-    }
-
-    return 0;
-}
-// 💡 修复 1：彻底刹停，防止反转暂停失败！
-// 严谨电机控制函数
-void Motor_SetSpeed(int speed)
-{
-  uint32_t current_speed = (uint32_t)(3599 * (abs(speed) / 100.0f));
-  if (speed > 0)
-  {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, current_speed);
-  } 
-  else if (speed < 0)
-  {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, current_speed);
-  } 
-  else 
-  {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-  }
-}
 /**
  * @brief 供上层调用的“读后清零”事件获取函数
  * @retval 1: 刚才被按了一下; 0: 没按
@@ -175,65 +123,12 @@ __HAL_AFIO_REMAP_TIM3_PARTIAL();      // 3. 确保 TIM3 部分重映射到 PB4/P
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  static uint32_t last_disp_tick = 0;
-  //OLED_ShowString(0, 0, "==Motor Speed==");
   while (1)
   {
-    // 1. 检测旋钮旋转调速
-    int16_t cur_cnt = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
-    int16_t delta_ticks = cur_cnt - last_cnt;
-    if (abs(delta_ticks) >= 4)
-    {
-      int16_t steps = delta_ticks / 4;
-      last_cnt += steps * 4;
+    
+    /* USER CODE END WHILE */
 
-      speed_percent += steps * 5;
-
-      if (speed_percent > 100) speed_percent = 100;
-      if (speed_percent < -100) speed_percent = -100;
-    }
-
-    // 2. 旋钮按键检测（一键暂停/恢复）
-    if (Encoder_Key_Pressed())
-    {
-      is_paused = !is_paused; // 状态翻转
-    }
-
-    // 3. 驱动电机
-    if (is_paused) {
-      Motor_SetSpeed(0);
-    } else {
-      Motor_SetSpeed(speed_percent);
-    }
-
-    // 4. 屏幕看板刷新（全部使用大写字母，确保字库 100% 命中！）
-    if (HAL_GetTick() - last_disp_tick >= 100)
-    {
-      last_disp_tick = HAL_GetTick();
-
-      char buf[20];
-
-      // 第一行：设定速度 (SET:)
-      if (speed_percent >= 0)
-        sprintf(buf, "SET:  +%d%%     ", speed_percent);
-      else
-        sprintf(buf, "SET:  %d%%     ", speed_percent);
-      OLED_ShowString(0, 1, buf);
-
-      // 第二行：转速 (RPM:)
-      uint32_t sim_rpm = is_paused ? 0 : (abs(speed_percent) * 36);
-      sprintf(buf, "RPM:  %lu      ", sim_rpm);
-      OLED_ShowString(0, 2, buf);
-
-      // 第三行：状态显示 + PB6引脚真实电平探针！
-      uint8_t raw_pin = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6);
-      if (is_paused) {
-        sprintf(buf, "PAUSE (PIN:%d) ", raw_pin);
-      } else {
-        sprintf(buf, "RUN   (PIN:%d) ", raw_pin);
-      }
-      OLED_ShowString(0, 3, buf);
-    }
+    /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
 }
