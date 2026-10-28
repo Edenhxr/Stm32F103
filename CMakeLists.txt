@@ -49,6 +49,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/bsp.c
     Core/Src/key.c
     Core/Src/oled.c
+    Core/Src/adc.c
     # Add user sources here
 )
 

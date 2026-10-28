@@ -27,6 +27,8 @@
 #include "bsp.h"
 #include "key.h"
 #include "oled.h"
+#include "adc.h"
+
 #include "stm32f1xx_hal.h"
 #include "stm32f1xx_hal_gpio.h"
 /* USER CODE END Includes */
@@ -137,19 +139,28 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  //static uint32_t last_adc_tick = 0;
+  static uint32_t last_ui_tick = 0;
   while (1)
   {
-    // 1. 转到约 45 度 (脉宽 1.0ms = 1000 计数，安全范围内)
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 1000);
-    HAL_Delay(1000);
+    if (HAL_GetTick() - last_ui_tick >= 200)
+    {
+      last_ui_tick = HAL_GetTick();
 
-    // 2. 转到 90 度中位 (脉宽 1.5ms = 1500 计数)
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 1500);
-    HAL_Delay(1000);
+      // 1. 采集数据
+      uint16_t light = Adc_GetLight();
+      int16_t temp10 = Adc_GetTemperature10(); // 例如 25.6℃ 返回 256
 
-    // 3. 转到约 135 度 (脉宽 2.0ms = 2000 计数，安全范围内)
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 2000);
-    HAL_Delay(1000);
+      // 2. 格式化光照显示字符串: "L : 2500"
+      char buf_light[16];
+      sprintf(buf_light, "L : %04d", light);
+      OLED_ShowString(16, 1, buf_light); // 在第 1 行显示
+
+      // 3. 格式化温度显示字符串: "T : 25.6 C"
+      char buf_temp[16];
+      sprintf(buf_temp, "T : %2d.%d C", temp10 / 10, abs(temp10 % 10));
+      OLED_ShowString(16, 2, buf_temp);  // 在第 2 行显示
+    }
     
     /* USER CODE END WHILE */
 
