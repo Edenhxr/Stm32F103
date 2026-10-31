@@ -28,7 +28,7 @@
 #include "key.h"
 #include "oled.h"
 #include "adc.h"
-
+#include "w25q64.h"
 #include "stm32f1xx_hal.h"
 #include "stm32f1xx_hal_gpio.h"
 /* USER CODE END Includes */
@@ -119,6 +119,8 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
+  W25Q64_Init();
+  uint32_t flash_id = W25Q64_ReadID();
   OLED_Init();
   OLED_Clear();
   __HAL_RCC_AFIO_CLK_ENABLE();          // 1. 必须开启 AFIO 复用时钟！
@@ -135,32 +137,19 @@ int main(void)
   // 2. 启动舵机 PWM 输出
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
   
+  
+  char id_str[32];
+  sprintf(id_str, "ID:0x%06X", (unsigned int)flash_id);
+  OLED_ShowString(0, 0, id_str);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   //static uint32_t last_adc_tick = 0;
   static uint32_t last_ui_tick = 0;
+  
   while (1)
   {
-    if (HAL_GetTick() - last_ui_tick >= 200)
-    {
-      last_ui_tick = HAL_GetTick();
-
-      // 1. 采集数据
-      uint16_t light = Adc_GetLight();
-      int16_t temp10 = Adc_GetTemperature10(); // 例如 25.6℃ 返回 256
-
-      // 2. 格式化光照显示字符串: "L : 2500"
-      char buf_light[16];
-      sprintf(buf_light, "L : %04d", light);
-      OLED_ShowString(16, 1, buf_light); // 在第 1 行显示
-
-      // 3. 格式化温度显示字符串: "T : 25.6 C"
-      char buf_temp[16];
-      sprintf(buf_temp, "T : %2d.%d C", temp10 / 10, abs(temp10 % 10));
-      OLED_ShowString(16, 2, buf_temp);  // 在第 2 行显示
-    }
     
     /* USER CODE END WHILE */
 

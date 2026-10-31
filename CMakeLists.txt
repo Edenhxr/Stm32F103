@@ -50,6 +50,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/key.c
     Core/Src/oled.c
     Core/Src/adc.c
+    Core/Src/w25q64.c
     # Add user sources here
 )
 
