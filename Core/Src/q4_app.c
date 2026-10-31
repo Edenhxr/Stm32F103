@@ -6,7 +6,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// 状态机枚举定义
 typedef enum {
     ST_LOGIN = 0,
     ST_DENIED,
@@ -21,42 +20,55 @@ typedef enum {
 
 static AppState_t s_app_state = ST_LOGIN;
 
-// 密码相关变量 (4 位数字)
-static uint8_t s_sys_pwd[4]   = {1, 2, 3, 4}; // 系统当前密码 (开机从 W25Q64 读出)
-static uint8_t s_input_pwd[4] = {0, 0, 0, 0}; // 用户正在输入的密码
-static uint8_t s_new_pwd[4]   = {0, 0, 0, 0}; // 修改密码时的新密码
-static uint8_t s_cursor       = 0;            // 光标位置: 0~3 对应第1~4位数字，4 对应 'e'
-static uint8_t s_is_editing   = 0;            // 0: 移动光标状态, 1: 编辑该位数字状态
+static uint8_t s_sys_pwd[4]   = {1, 2, 3, 4}; 
+static uint8_t s_input_pwd[4] = {0, 0, 0, 0}; 
+static uint8_t s_new_pwd[4]   = {0, 0, 0, 0}; 
+static uint8_t s_cursor       = 0;            
+static uint8_t s_is_editing   = 0;            
 
-// 菜单与舵机变量
-static uint8_t s_menu_idx     = 0;            // 0: 光热监控, 1: 舵机控制, 2: 密码修改
-static int16_t s_servo_angle  = 90;           // 舵机初始角度 90度
+static uint8_t s_menu_idx     = 0;            
+static int16_t s_servo_angle  = 90;           
 
-// 外部硬件定时器句柄声明
 extern TIM_HandleTypeDef htim1;
 extern TIM_HandleTypeDef htim3;
 extern TIM_HandleTypeDef htim4;
 
-// ---------------- 1. 编码器按压按键底层驱动 (PB6) ----------------
-static uint8_t s_sw_cnt = 0;
-static uint8_t s_sw_stable = 0;
+// ---------------- 1. 蜂鸣器严格适配低电平触发 (PB3) ----------------
+// 低电平 0 响，高电平 1 关
+#define BUZZER_ON()   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET)
+#define BUZZER_OFF()  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET)
+
+static void Beep_Short(void) {
+    BUZZER_ON();
+    HAL_Delay(80);
+    BUZZER_OFF();
+}
+
+static void Beep_Long(void) {
+    BUZZER_ON();
+    HAL_Delay(600);
+    BUZZER_OFF();
+}
+
+// ---------------- 2. 毫秒级极速响应按键检测 (PB6) ----------------
 static uint8_t s_sw_event = 0;
 
 void Encoder_Key_Scan(void)
 {
-    uint8_t is_down = (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6) == GPIO_PIN_RESET);
-    if (is_down) {
-        if (s_sw_cnt < 15) {
-            s_sw_cnt++;
-            if (s_sw_cnt >= 15 && s_sw_stable == 0) {
-                s_sw_stable = 1;
-                s_sw_event = 1; // 产生按下事件
-            }
+    static uint8_t last_pin_state = 1; // 上拉输入，默认高电平 1
+    static uint32_t last_press_time = 0;
+
+    uint8_t cur_pin_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6);
+
+    // 捕捉下降沿：从 1 变 0 的瞬间判定为刚按下去！
+    if (last_pin_state == 1 && cur_pin_state == 0) {
+        // 时间窗防抖：距离上一次有效触发大于 120ms，彻底杜绝机械回弹
+        if (HAL_GetTick() - last_press_time > 120) {
+            s_sw_event = 1; // 发货！
+            last_press_time = HAL_GetTick();
         }
-    } else {
-        s_sw_cnt = 0;
-        s_sw_stable = 0;
     }
+    last_pin_state = cur_pin_state;
 }
 
 uint8_t Encoder_Key_Pressed(void)
@@ -66,58 +78,43 @@ uint8_t Encoder_Key_Pressed(void)
     return event;
 }
 
-// ---------------- 2. 电机调速底层驱动 (TIM1_CH1 / PB12 / PB13) ----------------
+// ---------------- 3. 电机调速 (TIM1_CH1 / PB12 / PB13) ----------------
 void Motor_SetSpeed(int speed)
 {
     uint32_t current_speed = (uint32_t)(3599 * (abs(speed) / 100.0f));
 
-    if (speed > 0) // 正转
-    {
+    if (speed > 0) {
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, current_speed);
-    } 
-    else if (speed < 0) // 反转
-    {
+    } else if (speed < 0) {
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, current_speed);
-    } 
-    else // 停转
-    {
+    } else {
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
     }
 }
 
-// ---------------- 3. 编码器旋转步数提取 ----------------
+// ---------------- 4. 编码器旋转步数提取 ----------------
 static int16_t Get_Encoder_Step(void) {
     static int16_t last_cnt = 0;
     int16_t cur_cnt = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
     int16_t delta = cur_cnt - last_cnt;
-    if (abs(delta) >= 4) {
-        int16_t step = delta / 4;
-        last_cnt += step * 4;
-        return step;
+    
+    // 机械旋钮一格4个跳变，每满2个或4个计算一步
+    if (abs(delta) >= 2) {
+        int16_t step = delta / 2;
+        last_cnt += step * 2;
+        if (abs(step) >= 2) {
+            return step / 2;
+        }
     }
     return 0;
 }
 
-// ---------------- 4. 蜂鸣器提示音 ----------------
-static void Beep_Short(void) {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET); // 响
-    HAL_Delay(80);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);   // 关
-}
-
-static void Beep_Long(void) {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);
-    HAL_Delay(600);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);
-}
-
-// ---------------- 5. 舵机角度驱动 (PB7) ----------------
 static void Servo_Update(int16_t angle) {
     if (angle < 0) angle = 0;
     if (angle > 180) angle = 180;
@@ -125,19 +122,22 @@ static void Servo_Update(int16_t angle) {
     __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, pulse);
 }
 
-// ---------------- 6. 密码输入界面通用逻辑 ----------------
+// ---------------- 5. 密码输入界面交互 ----------------
 static uint8_t Password_Input_Handler(uint8_t *pwd_buf, const char *title)
 {
     int16_t step = Get_Encoder_Step();
     uint8_t clicked = Encoder_Key_Pressed();
 
+    // 旋转操作
     if (step != 0) {
         if (s_is_editing) {
+            // 编辑数字：0~9
             int16_t val = (int16_t)pwd_buf[s_cursor] + step;
             while (val < 0) val += 10;
             while (val > 9) val -= 10;
             pwd_buf[s_cursor] = (uint8_t)val;
         } else {
+            // 移动光标：0~4 (4 对应 'e')
             int16_t cur = (int16_t)s_cursor + step;
             while (cur < 0) cur += 5;
             while (cur > 4) cur -= 5;
@@ -145,60 +145,67 @@ static uint8_t Password_Input_Handler(uint8_t *pwd_buf, const char *title)
         }
     }
 
+    // 按下操作：瞬间响应！
     if (clicked) {
         if (s_cursor == 4) {
-            return 1; // 确认提交
+            return 1; // 在 'e' 上提交验证！
         } else {
-            s_is_editing = !s_is_editing; // 切换编辑模式
+            s_is_editing = !s_is_editing; // 切换编辑/移动状态
         }
     }
 
-    OLED_ShowString(0, 0, (char *)title);
+    // 状态提示行
+    if (s_is_editing) {
+        OLED_ShowString(0, 0, "EDITING VALUE...");
+    } else {
+        OLED_ShowString(0, 0, (char *)title);
+    }
 
-    char pwd_line[16];
+    // 密码行显示：4个数字 + 间距 + 'e'
+    char pwd_line[20];
     uint8_t blink = (HAL_GetTick() / 300) % 2;
 
     for (int i = 0; i < 4; i++) {
         if (s_is_editing && s_cursor == i && blink == 0) {
-            pwd_line[i * 2] = ' ';
+            pwd_line[i * 3] = ' '; // 闪烁！
         } else {
-            pwd_line[i * 2] = '0' + pwd_buf[i];
+            pwd_line[i * 3] = '0' + pwd_buf[i];
         }
-        pwd_line[i * 2 + 1] = ' ';
+        pwd_line[i * 3 + 1] = ' ';
+        pwd_line[i * 3 + 2] = ' ';
     }
-    pwd_line[8] = 'e';
-    pwd_line[9] = '\0';
+    pwd_line[12] = 'e'; // 正立标致的小写 e！
+    pwd_line[13] = '\0';
     OLED_ShowString(16, 2, pwd_line);
 
-    char cursor_line[16] = "                ";
-    cursor_line[s_cursor * 2] = '^';
-    cursor_line[9] = '\0';
+    // 光标指示行：清晰可见的 '^'
+    char cursor_line[20] = "                    ";
+    cursor_line[s_cursor * 3] = '^'; // 纯正光标箭头！
+    cursor_line[14] = '\0';
     OLED_ShowString(16, 3, cursor_line);
 
     return 0;
 }
 
-// ---------------- 7. 第 4 题全局初始化 ----------------
+// ---------------- 6. 全局初始化 ----------------
 void Q4_Init(void) {
+    BUZZER_OFF(); // 👈 开机第一行代码：死死拉高 PB3，彻底静音！
     W25Q64_Init();
-    W25Q64_LoadPassword(s_sys_pwd); // 从 Flash 加载密码 (默认 1234)
-    Servo_Update(s_servo_angle);     // 舵机初始 90°
+    W25Q64_LoadPassword(s_sys_pwd); 
+    Servo_Update(s_servo_angle);     
     s_app_state = ST_LOGIN;
 }
 
-// ---------------- 8. 第 4 题主任务调度 ----------------
+// ---------------- 7. 主任务调度 ----------------
 void Q4_Task(void)
 {
-    static uint32_t last_scan = 0;
-    if (HAL_GetTick() - last_scan >= 1) {
-        last_scan = HAL_GetTick();
-        Encoder_Key_Scan();
-    }
+    // 按键高频扫描：无延迟精准捕获下压瞬间
+    Encoder_Key_Scan();
 
     switch (s_app_state)
     {
         case ST_LOGIN:
-            if (Password_Input_Handler(s_input_pwd, "PASSWORD LOGIN")) {
+            if (Password_Input_Handler(s_input_pwd, "PASSWORD LOGIN  ")) {
                 if (s_input_pwd[0] == s_sys_pwd[0] && s_input_pwd[1] == s_sys_pwd[1] &&
                     s_input_pwd[2] == s_sys_pwd[2] && s_input_pwd[3] == s_sys_pwd[3]) 
                 {
@@ -214,8 +221,8 @@ void Q4_Task(void)
             break;
 
         case ST_DENIED:
-            OLED_ShowString(16, 1, "PASSWORD ERROR");
-            OLED_ShowString(24, 2, "TRY AGAIN...");
+            OLED_ShowString(8, 1, "PASSWORD ERROR ");
+            OLED_ShowString(16, 2, "PLEASE RETRY...");
             HAL_Delay(1200);
             s_input_pwd[0] = s_input_pwd[1] = s_input_pwd[2] = s_input_pwd[3] = 0;
             s_cursor = 0; s_is_editing = 0;
@@ -227,8 +234,8 @@ void Q4_Task(void)
             int16_t step = Get_Encoder_Step();
             if (step != 0) {
                 int16_t m = (int16_t)s_menu_idx + step;
-                if (m < 0) m = 2;
-                if (m > 2) m = 0;
+                while (m < 0) m += 3;
+                while (m > 2) m -= 3;
                 s_menu_idx = (uint8_t)m;
             }
 
@@ -254,7 +261,7 @@ void Q4_Task(void)
             if (Encoder_Key_Pressed()) {
                 Motor_SetSpeed(0);
                 BSP_LedAll(0x00);
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);
+                BUZZER_OFF();
                 OLED_Clear();
                 s_app_state = ST_MENU;
                 break;
@@ -278,10 +285,10 @@ void Q4_Task(void)
             if (temp10 >= 450) {
                 uint8_t alarm_blink = (HAL_GetTick() / 250) % 2;
                 BSP_LedAll(alarm_blink ? 0xFF : 0x00);
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, alarm_blink ? GPIO_PIN_RESET : GPIO_PIN_SET);
+                if (alarm_blink) { BUZZER_ON(); } else { BUZZER_OFF(); }
             } else {
                 BSP_LedAll(0x00);
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);
+                BUZZER_OFF();
             }
 
             char buf[32];
@@ -318,7 +325,7 @@ void Q4_Task(void)
         }
 
         case ST_OLD_PWD:
-            if (Password_Input_Handler(s_input_pwd, "VERIFY OLD PWD")) {
+            if (Password_Input_Handler(s_input_pwd, "VERIFY OLD PWD  ")) {
                 if (s_input_pwd[0] == s_sys_pwd[0] && s_input_pwd[1] == s_sys_pwd[1] &&
                     s_input_pwd[2] == s_sys_pwd[2] && s_input_pwd[3] == s_sys_pwd[3]) 
                 {
@@ -336,7 +343,7 @@ void Q4_Task(void)
             break;
 
         case ST_NEW_PWD:
-            if (Password_Input_Handler(s_new_pwd, "ENTER NEW PWD")) {
+            if (Password_Input_Handler(s_new_pwd, "ENTER NEW PWD   ")) {
                 s_input_pwd[0] = s_input_pwd[1] = s_input_pwd[2] = s_input_pwd[3] = 0;
                 s_cursor = 0; s_is_editing = 0;
                 OLED_Clear();
@@ -345,12 +352,12 @@ void Q4_Task(void)
             break;
 
         case ST_NEW_AGAIN:
-            if (Password_Input_Handler(s_input_pwd, "CONFIRM PWD")) {
+            if (Password_Input_Handler(s_input_pwd, "CONFIRM PWD     ")) {
                 if (s_input_pwd[0] == s_new_pwd[0] && s_input_pwd[1] == s_new_pwd[1] &&
                     s_input_pwd[2] == s_new_pwd[2] && s_input_pwd[3] == s_new_pwd[3]) 
                 {
                     for (int i = 0; i < 4; i++) s_sys_pwd[i] = s_new_pwd[i];
-                    W25Q64_SavePassword(s_sys_pwd); // 写入 Flash 持久化保存
+                    W25Q64_SavePassword(s_sys_pwd);
                     Beep_Short();
                     OLED_Clear();
                     s_app_state = ST_CHANGE_OK;
