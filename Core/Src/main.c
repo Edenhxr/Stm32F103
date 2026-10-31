@@ -129,6 +129,7 @@ int main(void)
   __HAL_AFIO_REMAP_SWJ_NOJTAG();        // 2. 彻底释放 PB3/PB4，关闭 JTAG，保留 SWD！
   __HAL_AFIO_REMAP_TIM3_PARTIAL();      // 3. 确保 TIM3 部分重映射到 PB4/PB5 真正生效！
   BSP_Init();
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET)；
   Key_Init();
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL); // 开启 TIM3 编码器接口
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
@@ -139,7 +140,15 @@ int main(void)
   //char id_str[32];
   //sprintf(id_str, "ID:0x%06X", (unsigned int)flash_id);
   //OLED_ShowString(0, 0, id_str);
-  Q4_Init();
+  // 1. 启动板载 LED（PC13）做心跳指示
+
+
+  // 2. 启动 TIM4 通道 2 的 PWM 输出（PB7）
+  __HAL_RCC_TIM4_CLK_ENABLE();
+
+  // 初始给 90 度中位 (1.5ms = 1500 计数)
+  __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 1500);
+  HAL_Delay(1000);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -148,7 +157,40 @@ int main(void)
   
   while (1)
   {
-    Q4_Task();
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET)；
+    // ================= 测试 1：经典三档角度阶跃 =================
+
+    // 1. 转到 45 度 (脉宽 1000us)
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 1000);
+    BSP_LedAll(0x01); // 亮第 1 颗灯
+    HAL_Delay(1000);
+
+    // 2. 转到 90 度中位 (脉宽 1500us)
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 1500);
+    BSP_LedAll(0x02); // 亮第 2 颗灯
+    HAL_Delay(1000);
+
+    // 3. 转到 135 度 (脉宽 2000us)
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 2000);
+    BSP_LedAll(0x04); // 亮第 3 颗灯
+    HAL_Delay(1000);
+
+    // ================= 测试 2：连续平滑往复扫动 =================
+    // 从 600us (约 10°) 平滑转到 2400us (约 170°)
+    for (uint32_t p = 600; p <= 2400; p += 20)
+    {
+        __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, p);
+        HAL_Delay(15); // 每 15ms 移动一小步
+    }
+
+    // 从 2400us 倒转回 600us
+    for (uint32_t p = 2400; p >= 600; p -= 20)
+    {
+        __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, p);
+        HAL_Delay(15);
+    }
+
+    HAL_Delay(500);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
