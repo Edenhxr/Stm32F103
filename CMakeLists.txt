@@ -51,6 +51,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/oled.c
     Core/Src/adc.c
     Core/Src/w25q64.c
+    Core/Src/q4_app.c
+    Core/Src/oled_font_cn.c
     # Add user sources here
 )
 

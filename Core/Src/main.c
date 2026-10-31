@@ -28,6 +28,8 @@
 #include "key.h"
 #include "oled.h"
 #include "adc.h"
+#include "q4_app.h"
+#include "oled_font.h"
 #include "w25q64.h"
 #include "stm32f1xx_hal.h"
 #include "stm32f1xx_hal_gpio.h"
@@ -120,7 +122,7 @@ int main(void)
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
   W25Q64_Init();
-  uint32_t flash_id = W25Q64_ReadID();
+  //uint32_t flash_id = W25Q64_ReadID();
   OLED_Init();
   OLED_Clear();
   __HAL_RCC_AFIO_CLK_ENABLE();          // 1. 必须开启 AFIO 复用时钟！
@@ -130,27 +132,23 @@ int main(void)
   Key_Init();
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL); // 开启 TIM3 编码器接口
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-  // 1. 蜂鸣器测试（假设为低电平触发）：响一声 80ms 后彻底静音
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET); // 拉低响
-  HAL_Delay(80);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);   // 拉高关
-  // 2. 启动舵机 PWM 输出
+  //启动舵机 PWM 输出
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
   
   
-  char id_str[32];
-  sprintf(id_str, "ID:0x%06X", (unsigned int)flash_id);
-  OLED_ShowString(0, 0, id_str);
+  //char id_str[32];
+  //sprintf(id_str, "ID:0x%06X", (unsigned int)flash_id);
+  //OLED_ShowString(0, 0, id_str);
+  Q4_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   //static uint32_t last_adc_tick = 0;
-  static uint32_t last_ui_tick = 0;
   
   while (1)
   {
-    
+    Q4_Task();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
